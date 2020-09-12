@@ -3,6 +3,8 @@
 #![cfg(not(target_os = "android"))]
 #![feature(btree_drain_filter)]
 #![feature(map_first_last)]
+#![feature(str_internals)]
+#![feature(core_intrinsics)]
 #![feature(repr_simd)]
 #![feature(test)]
 

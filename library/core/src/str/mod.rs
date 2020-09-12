@@ -594,6 +594,7 @@ impl<'a> Iterator for Chars<'a> {
 
     #[inline]
     fn count(self) -> usize {
+        // char_count(self.as_str())
         // length in `char` is equal to the number of non-continuation bytes
         let bytes_len = self.iter.len();
         let mut cont_bytes = 0;
@@ -617,6 +618,74 @@ impl<'a> Iterator for Chars<'a> {
         // No need to go through the entire string.
         self.next_back()
     }
+}
+#[cfg(any())]
+fn char_count(s: &str) -> usize {
+    fn count_noncontinuation_bytes(s: &[u8]) -> usize {
+        let mut c = 0;
+        for &byte in s {
+            c += (byte as i8 >= -0x40) as usize;
+        }
+        c
+    }
+
+    type Word = usize;
+
+    #[inline]
+    fn is_noncontinuation_byte_swar(w: Word) -> Word {
+        const LSB: Word = 0x0101_0101_0101_0101u64 as Word;
+        // We want a 1 in the LSB of each byte matching `0b10_??_??_??`,
+        ((!w >> 7) | (w >> 6)) & LSB
+    }
+
+    #[inline]
+    fn hsum_bytes_in_word(values: Word) -> usize {
+        const LSB_SHORTS: usize = 0x0001_0001_0001_0001_u64 as Word;
+        const SKIP_BYTES: usize = 0x00ff_00ff_00ff_00ff_u64 as Word;
+        let pair_sum: usize = (values & SKIP_BYTES) + ((values >> 8) & SKIP_BYTES);
+        (pair_sum.wrapping_mul(LSB_SHORTS) >> ((mem::size_of::<Word>() - 2) * 8)) as usize
+    }
+
+    // Experimentally determined to be the sweet spot. (If you change this you
+    // still need to manually change the inner loop -- this is mostly here for
+    // clarity).
+    const UNROLL: usize = 4;
+
+    // CHUNK_SIZE needs to be:
+    // - Less than or equal to 255 (otherwise we'll overflow bytes in `leads`).
+    // - A multiple of UNROLL
+    // - Relatively cheap to % against (although 192 seems be better on all
+    //   benches than 128)
+    // - Large enough to reduce the cost of the hsum, which is not the cheapest
+    //   thing here.
+    const CHUNK_SIZE: usize = 192;
+
+    let (head, body, tail) = unsafe { s.as_bytes().align_to::<Word>() };
+
+    let mut total = count_noncontinuation_bytes(head) + count_noncontinuation_bytes(tail);
+
+    for chunk in body.chunks(CHUNK_SIZE) {
+        let mut counts = 0;
+        for words in chunk.chunks_exact(UNROLL) {
+            counts += is_noncontinuation_byte_swar(words[0]);
+            counts += is_noncontinuation_byte_swar(words[1]);
+            counts += is_noncontinuation_byte_swar(words[2]);
+            counts += is_noncontinuation_byte_swar(words[3]);
+        }
+        total += hsum_bytes_in_word(counts);
+        if (chunk.len() % UNROLL) != 0 {
+            let mut counts = 0;
+            let end = &chunk[(chunk.len() - (chunk.len() % UNROLL))..];
+            for &word in end {
+                counts += is_noncontinuation_byte_swar(word);
+            }
+            total += hsum_bytes_in_word(counts);
+            // The break helps LLVM out, but is only correct if:
+            const _: [(); 0] = [(); CHUNK_SIZE % UNROLL];
+            break;
+        }
+    }
+    total
 }
 
 #[stable(feature = "chars_debug_impl", since = "1.38.0")]

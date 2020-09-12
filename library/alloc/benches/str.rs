@@ -1,4 +1,5 @@
 use test::{black_box, Bencher};
+mod char_count;
 
 #[bench]
 fn char_iterator(b: &mut Bencher) {
