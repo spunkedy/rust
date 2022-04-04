@@ -1,4 +1,10 @@
-#!/usr/bin/env python
+#!/bin/sh
+# This is simultaneously a valid shell script and python file.
+# If executed as a shell script, it attempts to re-execute
+# itself as python. (Note that the MSYSTEM check used to be
+# required for mingw but may not be required anymore)
+''':' && if [ ! -z "$MSYSTEM" ] ; then exec python "$0" "$@" ; else which python3 > /dev/null 2> /dev/null && exec python3 "$0" "$@" || exec python "$0" "$@" ; fi
+'''
 
 # This file is only a "symlink" to bootstrap.py, all logic should go there.
 
