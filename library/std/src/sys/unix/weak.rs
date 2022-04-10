@@ -1,16 +1,27 @@
-//! Support for "weak linkage" to symbols on Unix
+//! Support for "weak linkage" to import symbols on Unix
 //!
 //! Some I/O operations we do in libstd require newer versions of OSes but we
 //! need to maintain binary compatibility with older releases for now. In order
 //! to use the new functionality when available we use this module for
 //! detection.
 //!
-//! One option to use here is weak linkage, but that is unfortunately only
-//! really workable with ELF. Otherwise, use dlsym to get the symbol value at
-//! runtime. This is also done for compatibility with older versions of glibc,
-//! and to avoid creating dependencies on GLIBC_PRIVATE symbols. It assumes that
-//! we've been dynamically linked to the library the symbol comes from, but that
-//! is currently always the case for things like libpthread/libc.
+//! There are a few ways we can choose to implement this:
+//!
+//! In some object file formats, we can mark an imported symbol with a flag that
+//! has a meaning along the lines of: "this symbol is allowed to not be defined;
+//! if it is undefined, please treat it as null". This usually either called a
+//! "weak import", "extern weak", or a "weak reference". Regardless of the name,
+//! this use case is well-supported by both ELF and Mach-O, and is exposed by
+//! `#[linkage = "extern_weak"]`. This covers all the object file formats used
+//! by targets relevant to this code, so we now use it to implement `weak!`
+//! unconditionally.
+//!
+//! Another approach would be to lazily load the symbol using `dlsym`. This is
+//! no longer needed to implment `weak!`, but still may be useful for
+//! compatibility older versions of glibc, and to avoid creating dependencies on
+//! GLIBC_PRIVATE symbols. It assumes that we've been dynamically linked to the
+//! library the symbol comes from, but that is currently always the case for
+//! things like libpthread/libc.
 //!
 //! A long time ago this used weak linkage for the __pthread_get_minstack
 //! symbol, but that caused Debian to detect an unnecessarily strict versioned
@@ -27,8 +38,7 @@ use crate::marker::PhantomData;
 use crate::mem;
 use crate::sync::atomic::{self, AtomicUsize, Ordering};
 
-// We can use true weak linkage on ELF targets.
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+// Both ELF and Mach-O support weak symbol imports.
 pub(crate) macro weak {
     (fn $name:ident($($t:ty),*) -> $ret:ty) => (
         let ref $name: ExternWeak<unsafe extern "C" fn($($t),*) -> $ret> = {
@@ -41,10 +51,6 @@ pub(crate) macro weak {
         };
     )
 }
-
-// On non-ELF targets, use the dlsym approximation of weak linkage.
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-pub(crate) use self::dlsym as weak;
 
 pub(crate) struct ExternWeak<F> {
     weak_ptr: *const libc::c_void,
