@@ -416,6 +416,9 @@ pub use self::adapters::{
 #[unstable(feature = "iter_intersperse", reason = "recently added", issue = "79524")]
 pub use self::adapters::{Intersperse, IntersperseWith};
 
+#[unstable(feature = "iter_as_deref", reason = "recently added", issue = "none")]
+pub use self::adapters::{AsDeref, AsDerefMut};
+
 pub(crate) use self::adapters::{try_process, ByRefSized};
 
 mod adapters;

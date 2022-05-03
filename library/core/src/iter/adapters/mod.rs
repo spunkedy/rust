@@ -1,6 +1,7 @@
 use crate::iter::{InPlaceIterable, Iterator};
 use crate::ops::{ChangeOutputType, ControlFlow, FromResidual, NeverShortCircuit, Residual, Try};
 
+mod as_deref;
 mod by_ref_sized;
 mod chain;
 mod cloned;
@@ -33,6 +34,9 @@ pub use self::{
 };
 
 pub(crate) use self::by_ref_sized::ByRefSized;
+
+#[unstable(feature = "iter_as_deref", reason = "recently added", issue = "none")]
+pub use self::as_deref::{AsDeref, AsDerefMut};
 
 #[stable(feature = "iter_cloned", since = "1.1.0")]
 pub use self::cloned::Cloned;

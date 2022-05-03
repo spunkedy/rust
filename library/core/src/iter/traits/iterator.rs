@@ -4,7 +4,9 @@ use crate::ops::{ChangeOutputType, ControlFlow, FromResidual, Residual, Try};
 use super::super::try_process;
 use super::super::ByRefSized;
 use super::super::TrustedRandomAccessNoCoerce;
-use super::super::{Chain, Cloned, Copied, Cycle, Enumerate, Filter, FilterMap, Fuse};
+use super::super::{
+    AsDeref, AsDerefMut, Chain, Cloned, Copied, Cycle, Enumerate, Filter, FilterMap, Fuse,
+};
 use super::super::{FlatMap, Flatten};
 use super::super::{FromIterator, Intersperse, IntersperseWith, Product, Sum, Zip};
 use super::super::{
@@ -3233,6 +3235,70 @@ pub trait Iterator {
         T: Clone,
     {
         Cloned::new(self)
+    }
+
+    /// Creates an iterator which coerces each element using the [`Deref`]
+    /// trait.
+    ///
+    /// This is useful when you have an iterator over a reference to a smart
+    /// pointer, and need an iterator over references to the pointee.
+    ///
+    /// [`Deref`]: crate::ops::Deref
+    ///
+    /// # Examples
+    ///
+    /// Converting an iterator over `&String` into an iterator over `&str`:
+    ///
+    /// ```
+    /// #![feature(iter_as_deref)]
+    ///
+    /// let strings = ["foo".to_string(), "bar".to_string(), "baz".to_string()];
+    ///
+    /// let strs: Vec<&str> = strings.iter().as_deref().collect();
+    ///
+    /// assert_eq!(strs, vec!["foo", "bar", "baz"]);
+    /// ```
+    #[unstable(feature = "iter_as_deref", reason = "recently added", issue = "none")]
+    fn as_deref<'a, T>(self) -> AsDeref<Self>
+    where
+        Self: Sized + Iterator<Item = &'a T>,
+        T: crate::ops::Deref + ?Sized + 'a,
+    {
+        AsDeref::new(self)
+    }
+
+    /// Creates an iterator which coerces each element using the [`DerefMut`]
+    /// trait.
+    ///
+    /// This is useful when you have an iterator over a reference to a smart
+    /// pointer, and need an iterator over references to the pointee.
+    ///
+    /// [`DerefMut`]: crate::ops::DerefMut
+    ///
+    /// # Examples
+    ///
+    /// Converting an iterator over `&mut String` into an iterator over `&mut
+    /// str`:
+    ///
+    /// ```
+    /// #![feature(iter_as_deref)]
+    ///
+    /// let mut strings = ["foo".to_string(), "bar".to_string(), "baz".to_string()];
+    ///
+    /// let strs: Vec<&mut str> = strings.iter_mut().as_deref_mut().map(|s| {
+    ///     s.make_ascii_uppercase();
+    ///     s
+    /// }).collect();
+    ///
+    /// assert_eq!(strs, ["FOO", "BAR", "BAZ"]);
+    /// ```
+    #[unstable(feature = "iter_as_deref", reason = "recently added", issue = "none")]
+    fn as_deref_mut<'a, T>(self) -> AsDerefMut<Self>
+    where
+        Self: Sized + Iterator<Item = &'a mut T>,
+        T: crate::ops::DerefMut + ?Sized + 'a,
+    {
+        AsDerefMut::new(self)
     }
 
     /// Repeats an iterator endlessly.
