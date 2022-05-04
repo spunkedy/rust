@@ -49,3 +49,18 @@ pub fn try_exists(path: &Path) -> io::Result<bool> {
         Err(error) => Err(error),
     }
 }
+
+// Conceptually, this is (basically) a `ThinBox<(i32, CStr)>`, where the `CStr`
+// happens to hold a path. It is used in two cases:
+//
+// 1. If we pass a path to a syscall which produces an error, we store `io::Error` if we
+//
+// 1. On unix, currently always heap allocate memory when converting from `Path`
+//    to a `CStr` in order to get a pointer we can pass to the syscall.
+//
+//     - Note th
+// 2.
+//
+// There are two reasons we don't actually use that:
+// -
+struct OsPathBufAndError {}

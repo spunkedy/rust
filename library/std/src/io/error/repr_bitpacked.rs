@@ -102,7 +102,7 @@
 //! to use a pointer type to store something that may hold an integer, some of
 //! the time.
 
-use super::{Custom, ErrorData, ErrorKind, SimpleMessage};
+use super::{Custom, ErrorData, ErrorKind, OsPathBufAndError as OsAndPath, SimpleMessage};
 use alloc::boxed::Box;
 use core::marker::PhantomData;
 use core::mem::{align_of, size_of};
@@ -198,7 +198,7 @@ impl Repr {
     }
 
     #[inline]
-    pub(super) fn data(&self) -> ErrorData<&Custom> {
+    pub(super) fn data(&self) -> ErrorData<&Custom, &super::OsPathBufAndError> {
         // Safety: We're a Repr, decode_repr is fine.
         unsafe { decode_repr(self.0, |c| &*c) }
     }

@@ -6,10 +6,14 @@ mod repr_bitpacked;
 #[cfg(target_pointer_width = "64")]
 use repr_bitpacked::Repr;
 
+mod pathbuf_and_code;
+
 #[cfg(not(target_pointer_width = "64"))]
 mod repr_unpacked;
 #[cfg(not(target_pointer_width = "64"))]
 use repr_unpacked::Repr;
+
+pub(crate) use pathbuf_and_code::OsPathBufAndError;
 
 use crate::convert::From;
 use crate::error;
@@ -79,28 +83,20 @@ impl fmt::Debug for Error {
 // Only derive debug in tests, to make sure it
 // doesn't accidentally get printed.
 #[cfg_attr(test, derive(Debug))]
-enum ErrorData<C> {
+enum ErrorData<C, P> {
     Os(i32),
     Simple(ErrorKind),
     SimpleMessage(&'static SimpleMessage),
     Custom(C),
+    OsAndPath(P),
 }
 
-// `#[repr(align(4))]` is probably redundant, it should have that value or
-// higher already. We include it just because repr_bitpacked.rs's encoding
-// requires an alignment >= 4 (note that `#[repr(align)]` will not reduce the
-// alignment required by the struct, only increase it).
-//
-// If we add more variants to ErrorData, this can be increased to 8, but it
-// should probably be behind `#[cfg_attr(target_pointer_width = "64", ...)]` or
-// whatever cfg we're using to enable the `repr_bitpacked` code, since only the
-// that version needs the alignment, and 8 is higher than the alignment we'll
-// have on 32 bit platforms.
-//
-// (For the sake of being explicit: the alignment requirement here only matters
-// if `error/repr_bitpacked.rs` is in use — for the unpacked repr it doesn't
-// matter at all)
-#[repr(align(4))]
+// `#[repr(align(8))]` on 64bit is probably redundant, it should have that value
+// or higher already. We include it just because repr_bitpacked.rs's encoding
+// requires an alignment >= 8 (note that `#[repr(align)]` will not reduce the
+// alignment required by the struct, only increase it). We only bother with this
+// because
+#[cfg_attr(target_pointer_width = "64", repr(align(8)))]
 #[derive(Debug)]
 pub(crate) struct SimpleMessage {
     kind: ErrorKind,
