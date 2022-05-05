@@ -102,18 +102,20 @@
 //! to use a pointer type to store something that may hold an integer, some of
 //! the time.
 
-use super::{Custom, ErrorData, ErrorKind, OsPathBufAndError as OsAndPath, SimpleMessage};
+use super::{Custom, ErrorData, ErrorKind, OsWithPath, SimpleMessage};
+use super::{ErrorDataMutRef, ErrorDataOwned, ErrorDataRef};
 use alloc::boxed::Box;
 use core::marker::PhantomData;
 use core::mem::{align_of, size_of};
 use core::ptr::{self, NonNull};
 
-// The 2 least-significant bits are used as tag.
-const TAG_MASK: usize = 0b11;
-const TAG_SIMPLE_MESSAGE: usize = 0b00;
-const TAG_CUSTOM: usize = 0b01;
-const TAG_OS: usize = 0b10;
-const TAG_SIMPLE: usize = 0b11;
+// The 3 least-significant bits are used as tag.
+const TAG_MASK: usize = 0b111;
+const TAG_SIMPLE_MESSAGE: usize = 0b000;
+const TAG_CUSTOM: usize = 0b001;
+const TAG_OS: usize = 0b010;
+const TAG_SIMPLE: usize = 0b011;
+const TAG_OS_WITH_PATH: usize = 0b100;
 
 /// The internal representation.
 ///
@@ -125,7 +127,7 @@ const TAG_SIMPLE: usize = 0b11;
 /// is_unwind_safe::<std::io::Error>();
 /// ```
 #[repr(transparent)]
-pub(super) struct Repr(NonNull<()>, PhantomData<ErrorData<Box<Custom>>>);
+pub(super) struct Repr(NonNull<()>, PhantomData<ErrorDataOwned>);
 
 // All the types `Repr` stores internally are Send + Sync, and so is it.
 unsafe impl Send for Repr {}
@@ -159,6 +161,26 @@ impl Repr {
         // quickly smoke-check we encoded the right thing (This generally will
         // only run in libstd's tests, unless the user uses -Zbuild-std)
         debug_assert!(matches!(res.data(), ErrorData::Custom(_)), "repr(custom) encoding failed");
+        res
+    }
+
+    pub(super) fn new_os_with_path(b: Box<OsWithPath>) -> Self {
+        let p = Box::into_raw(b).cast::<u8>();
+        // Should only be possible if an allocator handed out a pointer with
+        // wrong alignment.
+        debug_assert_eq!(p.addr() & TAG_MASK, 0);
+        let tagged = p.wrapping_add(TAG_OS_WITH_PATH).cast::<()>();
+        // Safety: `TAG_OS_WITH_PATH + p` is the same as `TAG_OS_WITH_PATH | p`,
+        // because `p`'s alignment means it isn't allowed to have any of the
+        // `TAG_BITS` set (you can verify that addition and bitwise-or are the
+        // same when the operands have no bits in common using a truth table).
+        let res = Self(unsafe { NonNull::new_unchecked(tagged) }, PhantomData);
+        // quickly smoke-check we encoded the right thing (This generally will
+        // only run in libstd's tests, unless the user uses -Zbuild-std)
+        debug_assert!(
+            matches!(res.data(), ErrorData::OsWithPath(_)),
+            "repr(os + path) encoding failed"
+        );
         res
     }
 
@@ -198,23 +220,25 @@ impl Repr {
     }
 
     #[inline]
-    pub(super) fn data(&self) -> ErrorData<&Custom, &super::OsPathBufAndError> {
+    pub(super) fn data(&self) -> ErrorDataRef<'_> {
         // Safety: We're a Repr, decode_repr is fine.
-        unsafe { decode_repr(self.0, |c| &*c) }
+        unsafe { decode_repr(self.0, |c| &*c, |p| &*p) }
     }
 
     #[inline]
-    pub(super) fn data_mut(&mut self) -> ErrorData<&mut Custom> {
+    pub(super) fn data_mut(&mut self) -> ErrorDataMutRef<'_> {
         // Safety: We're a Repr, decode_repr is fine.
-        unsafe { decode_repr(self.0, |c| &mut *c) }
+        unsafe { decode_repr(self.0, |c| &mut *c, |p| &mut *p) }
     }
 
     #[inline]
-    pub(super) fn into_data(self) -> ErrorData<Box<Custom>> {
+    pub(super) fn into_data(self) -> ErrorDataOwned {
         let this = core::mem::ManuallyDrop::new(self);
         // Safety: We're a Repr, decode_repr is fine. The `Box::from_raw` is
         // safe because we prevent double-drop using `ManuallyDrop`.
-        unsafe { decode_repr(this.0, |p| Box::from_raw(p)) }
+        unsafe {
+            decode_repr(this.0, |p| Box::<Custom>::from_raw(p), |p| Box::<OsWithPath>::from_raw(p))
+        }
     }
 }
 
@@ -224,7 +248,11 @@ impl Drop for Repr {
         // Safety: We're a Repr, decode_repr is fine. The `Box::from_raw` is
         // safe because we're being dropped.
         unsafe {
-            let _ = decode_repr(self.0, |p| Box::<Custom>::from_raw(p));
+            let _ = decode_repr(
+                self.0,
+                |p| Box::<Custom>::from_raw(p),
+                |p| Box::<OsWithPath>::from_raw(p),
+            );
         }
     }
 }
@@ -234,9 +262,14 @@ impl Drop for Repr {
 // Safety: `ptr`'s bits should be encoded as described in the document at the
 // top (it should `some_repr.0`)
 #[inline]
-unsafe fn decode_repr<C, F>(ptr: NonNull<()>, make_custom: F) -> ErrorData<C>
+unsafe fn decode_repr<C, P, Fc, Fp>(
+    ptr: NonNull<()>,
+    make_custom: Fc,
+    make_os_with_path: Fp,
+) -> ErrorData<C, P>
 where
-    F: FnOnce(*mut Custom) -> C,
+    Fc: FnOnce(*mut Custom) -> C,
+    Fp: FnOnce(*mut OsWithPath) -> P,
 {
     let bits = ptr.as_ptr().addr();
     match bits & TAG_MASK {
@@ -266,9 +299,17 @@ where
             let custom = ptr.as_ptr().cast::<u8>().wrapping_sub(TAG_CUSTOM).cast::<Custom>();
             ErrorData::Custom(make_custom(custom))
         }
-        _ => {
-            // Can't happen, and compiler can tell
-            unreachable!();
+        TAG_OS_WITH_PATH => {
+            let pointer =
+                ptr.as_ptr().cast::<u8>().wrapping_sub(TAG_OS_WITH_PATH).cast::<OsWithPath>();
+            ErrorData::OsWithPath(make_os_with_path(pointer))
+        }
+        tag => {
+            if cfg!(any(test, debug_assertions)) {
+                panic!("invalid tag {tag:#05b} on bitpacked io::Error (this is probably UB)");
+            } else {
+                core::hint::unreachable_unchecked()
+            }
         }
     }
 }

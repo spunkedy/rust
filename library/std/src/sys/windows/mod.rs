@@ -276,6 +276,10 @@ pub fn cvt<I: IsZero>(i: I) -> crate::io::Result<I> {
     if i.is_zero() { Err(crate::io::Error::last_os_error()) } else { Ok(i) }
 }
 
+pub fn cvt_p<I: IsZero>(i: I, p: &Path) -> crate::io::Result<I> {
+    if i.is_zero() { Err(crate::io::Error::last_os_error_with_path(p)) } else { Ok(i) }
+}
+
 pub fn dur2timeout(dur: Duration) -> c::DWORD {
     // Note that a duration is a (u64, u32) (seconds, nanoseconds) pair, and the
     // timeouts in windows APIs are typically u32 milliseconds. To translate, we

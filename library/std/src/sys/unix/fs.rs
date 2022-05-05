@@ -10,7 +10,7 @@ use crate::ptr;
 use crate::sync::Arc;
 use crate::sys::fd::FileDesc;
 use crate::sys::time::SystemTime;
-use crate::sys::{cvt, cvt_r};
+use crate::sys::{cvt, cvt_p, cvt_r};
 use crate::sys_common::{AsInner, AsInnerMut, FromInner, IntoInner};
 
 #[cfg(any(
@@ -826,9 +826,9 @@ impl OpenOptions {
 }
 
 impl File {
-    pub fn open(path: &Path, opts: &OpenOptions) -> io::Result<File> {
-        let path = cstr(path)?;
-        File::open_c(&path, opts)
+    pub fn open(p: &Path, opts: &OpenOptions) -> io::Result<File> {
+        let path = cstr(p)?;
+        File::open_c(&path, opts).map_err(|e| e.with_path(p))
     }
 
     pub fn open_c(path: &CStr, opts: &OpenOptions) -> io::Result<File> {
@@ -1137,7 +1137,7 @@ pub fn readdir(p: &Path) -> io::Result<ReadDir> {
     unsafe {
         let ptr = libc::opendir(p.as_ptr());
         if ptr.is_null() {
-            Err(Error::last_os_error())
+            Err(Error::last_os_error_with_path(&root))
         } else {
             let inner = InnerReadDir { dirp: Dir(ptr), root };
             Ok(ReadDir {
@@ -1156,9 +1156,9 @@ pub fn readdir(p: &Path) -> io::Result<ReadDir> {
     }
 }
 
-pub fn unlink(p: &Path) -> io::Result<()> {
-    let p = cstr(p)?;
-    cvt(unsafe { libc::unlink(p.as_ptr()) })?;
+pub fn unlink(path: &Path) -> io::Result<()> {
+    let p = cstr(path)?;
+    cvt_p(unsafe { libc::unlink(p.as_ptr()) }, path)?;
     Ok(())
 }
 
@@ -1169,27 +1169,28 @@ pub fn rename(old: &Path, new: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub fn set_perm(p: &Path, perm: FilePermissions) -> io::Result<()> {
-    let p = cstr(p)?;
-    cvt_r(|| unsafe { libc::chmod(p.as_ptr(), perm.mode) })?;
+pub fn set_perm(path: &Path, perm: FilePermissions) -> io::Result<()> {
+    let p = cstr(path)?;
+    cvt_r(|| unsafe { libc::chmod(p.as_ptr(), perm.mode) }).map_err(|e| e.with_path(path))?;
     Ok(())
 }
 
-pub fn rmdir(p: &Path) -> io::Result<()> {
-    let p = cstr(p)?;
-    cvt(unsafe { libc::rmdir(p.as_ptr()) })?;
+pub fn rmdir(path: &Path) -> io::Result<()> {
+    let p = cstr(path)?;
+    cvt_p(unsafe { libc::rmdir(p.as_ptr()) }, path)?;
     Ok(())
 }
 
-pub fn readlink(p: &Path) -> io::Result<PathBuf> {
-    let c_path = cstr(p)?;
+pub fn readlink(path: &Path) -> io::Result<PathBuf> {
+    let c_path = cstr(path)?;
     let p = c_path.as_ptr();
 
     let mut buf = Vec::with_capacity(256);
 
     loop {
         let buf_read =
-            cvt(unsafe { libc::readlink(p, buf.as_mut_ptr() as *mut _, buf.capacity()) })? as usize;
+            cvt_p(unsafe { libc::readlink(p, buf.as_mut_ptr() as *mut _, buf.capacity()) }, path)?
+                as usize;
 
         unsafe {
             buf.set_len(buf_read);
@@ -1248,8 +1249,8 @@ pub fn link(original: &Path, link: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub fn stat(p: &Path) -> io::Result<FileAttr> {
-    let p = cstr(p)?;
+pub fn stat(path: &Path) -> io::Result<FileAttr> {
+    let p = cstr(path)?;
 
     cfg_has_statx! {
         if let Some(ret) = unsafe { try_statx(
@@ -1263,12 +1264,12 @@ pub fn stat(p: &Path) -> io::Result<FileAttr> {
     }
 
     let mut stat: stat64 = unsafe { mem::zeroed() };
-    cvt(unsafe { stat64(p.as_ptr(), &mut stat) })?;
+    cvt_p(unsafe { stat64(p.as_ptr(), &mut stat) }, path)?;
     Ok(FileAttr::from_stat64(stat))
 }
 
-pub fn lstat(p: &Path) -> io::Result<FileAttr> {
-    let p = cstr(p)?;
+pub fn lstat(path: &Path) -> io::Result<FileAttr> {
+    let p = cstr(path)?;
 
     cfg_has_statx! {
         if let Some(ret) = unsafe { try_statx(
@@ -1282,7 +1283,7 @@ pub fn lstat(p: &Path) -> io::Result<FileAttr> {
     }
 
     let mut stat: stat64 = unsafe { mem::zeroed() };
-    cvt(unsafe { lstat64(p.as_ptr(), &mut stat) })?;
+    cvt_p(unsafe { lstat64(p.as_ptr(), &mut stat) }, path)?;
     Ok(FileAttr::from_stat64(stat))
 }
 
@@ -1292,7 +1293,7 @@ pub fn canonicalize(p: &Path) -> io::Result<PathBuf> {
     unsafe {
         let r = libc::realpath(path.as_ptr(), ptr::null_mut());
         if r.is_null() {
-            return Err(io::Error::last_os_error());
+            return Err(io::Error::last_os_error_with_path(p));
         }
         buf = CStr::from_ptr(r).to_bytes().to_vec();
         libc::free(r as *mut _);
@@ -1492,8 +1493,8 @@ pub fn copy(from: &Path, to: &Path) -> io::Result<u64> {
 }
 
 pub fn chown(path: &Path, uid: u32, gid: u32) -> io::Result<()> {
-    let path = cstr(path)?;
-    cvt(unsafe { libc::chown(path.as_ptr(), uid as libc::uid_t, gid as libc::gid_t) })?;
+    let path_c = cstr(path)?;
+    cvt_p(unsafe { libc::chown(path_c.as_ptr(), uid as libc::uid_t, gid as libc::gid_t) }, path)?;
     Ok(())
 }
 
@@ -1510,8 +1511,8 @@ pub fn lchown(path: &Path, uid: u32, gid: u32) -> io::Result<()> {
 
 #[cfg(not(any(target_os = "fuchsia", target_os = "vxworks")))]
 pub fn chroot(dir: &Path) -> io::Result<()> {
-    let dir = cstr(dir)?;
-    cvt(unsafe { libc::chroot(dir.as_ptr()) })?;
+    let dir_c = cstr(dir)?;
+    cvt_p(unsafe { libc::chroot(dir_c.as_ptr()) }, dir)?;
     Ok(())
 }
 

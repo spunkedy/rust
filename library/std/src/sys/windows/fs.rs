@@ -286,10 +286,10 @@ impl OpenOptions {
 
 impl File {
     pub fn open(path: &Path, opts: &OpenOptions) -> io::Result<File> {
-        let path = maybe_verbatim(path)?;
+        let wpath = maybe_verbatim(path)?;
         let handle = unsafe {
             c::CreateFileW(
-                path.as_ptr(),
+                wpath.as_ptr(),
                 opts.get_access_mode()?,
                 opts.share_mode,
                 opts.security_attributes,
@@ -301,7 +301,7 @@ impl File {
         if let Ok(handle) = handle.try_into() {
             Ok(File { handle: Handle::from_inner(handle) })
         } else {
-            Err(Error::last_os_error())
+            Err(Error::last_os_error_with_path(path))
         }
     }
 
@@ -931,9 +931,9 @@ impl DirBuilder {
         DirBuilder
     }
 
-    pub fn mkdir(&self, p: &Path) -> io::Result<()> {
-        let p = maybe_verbatim(p)?;
-        cvt(unsafe { c::CreateDirectoryW(p.as_ptr(), ptr::null_mut()) })?;
+    pub fn mkdir(&self, path: &Path) -> io::Result<()> {
+        let p = maybe_verbatim(path)?;
+        cvt_p(unsafe { c::CreateDirectoryW(p.as_ptr(), ptr::null_mut()) }, path)?;
         Ok(())
     }
 }
@@ -953,14 +953,14 @@ pub fn readdir(p: &Path) -> io::Result<ReadDir> {
                 first: Some(wfd),
             })
         } else {
-            Err(Error::last_os_error())
+            Err(Error::last_os_error_with_path(&root))
         }
     }
 }
 
 pub fn unlink(p: &Path) -> io::Result<()> {
     let p_u16s = maybe_verbatim(p)?;
-    cvt(unsafe { c::DeleteFileW(p_u16s.as_ptr()) })?;
+    cvt_p(unsafe { c::DeleteFileW(p_u16s.as_ptr()) }, p)?;
     Ok(())
 }
 
@@ -972,8 +972,8 @@ pub fn rename(old: &Path, new: &Path) -> io::Result<()> {
 }
 
 pub fn rmdir(p: &Path) -> io::Result<()> {
-    let p = maybe_verbatim(p)?;
-    cvt(unsafe { c::RemoveDirectoryW(p.as_ptr()) })?;
+    let wp = maybe_verbatim(p)?;
+    cvt_p(unsafe { c::RemoveDirectoryW(wp.as_ptr()) }, p)?;
     Ok(())
 }
 
@@ -1158,10 +1158,10 @@ pub fn lstat(path: &Path) -> io::Result<FileAttr> {
     file.file_attr()
 }
 
-pub fn set_perm(p: &Path, perm: FilePermissions) -> io::Result<()> {
-    let p = maybe_verbatim(p)?;
+pub fn set_perm(path: &Path, perm: FilePermissions) -> io::Result<()> {
+    let p = maybe_verbatim(path)?;
     unsafe {
-        cvt(c::SetFileAttributesW(p.as_ptr(), perm.attrs))?;
+        cvt_p(c::SetFileAttributesW(p.as_ptr(), perm.attrs), path)?;
         Ok(())
     }
 }

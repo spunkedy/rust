@@ -263,9 +263,9 @@ impl OpenOptions {
 }
 
 impl File {
-    pub fn open(path: &Path, opts: &OpenOptions) -> io::Result<File> {
-        let path = cstr(path)?;
-        File::open_c(&path, opts)
+    pub fn open(p: &Path, opts: &OpenOptions) -> io::Result<File> {
+        let path = cstr(p)?;
+        File::open_c(&path, opts).map_err(|e| e.with_path(p))
     }
 
     pub fn open_c(path: &CStr, opts: &OpenOptions) -> io::Result<File> {

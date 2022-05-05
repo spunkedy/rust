@@ -202,6 +202,11 @@ pub fn cvt<T: IsMinusOne>(t: T) -> crate::io::Result<T> {
     if t.is_minus_one() { Err(crate::io::Error::last_os_error()) } else { Ok(t) }
 }
 
+#[allow(dead_code)]
+pub(crate) fn cvt_p<T: IsMinusOne>(t: T, p: &crate::path::Path) -> crate::io::Result<T> {
+    if t.is_minus_one() { Err(crate::io::Error::last_os_error_with_path(p)) } else { Ok(t) }
+}
+
 pub fn cvt_r<T, F>(mut f: F) -> crate::io::Result<T>
 where
     T: IsMinusOne,

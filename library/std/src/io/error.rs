@@ -6,20 +6,18 @@ mod repr_bitpacked;
 #[cfg(target_pointer_width = "64")]
 use repr_bitpacked::Repr;
 
-mod pathbuf_and_code;
-
 #[cfg(not(target_pointer_width = "64"))]
 mod repr_unpacked;
 #[cfg(not(target_pointer_width = "64"))]
 use repr_unpacked::Repr;
 
-pub(crate) use pathbuf_and_code::OsPathBufAndError;
-
 use crate::convert::From;
 use crate::error;
 use crate::fmt;
+use crate::path::Path;
 use crate::result;
 use crate::sys;
+use alloc::boxed::Box;
 
 /// A specialized [`Result`] type for I/O operations.
 ///
@@ -88,14 +86,19 @@ enum ErrorData<C, P> {
     Simple(ErrorKind),
     SimpleMessage(&'static SimpleMessage),
     Custom(C),
-    OsAndPath(P),
+    OsWithPath(P),
 }
 
-// `#[repr(align(8))]` on 64bit is probably redundant, it should have that value
-// or higher already. We include it just because repr_bitpacked.rs's encoding
-// requires an alignment >= 8 (note that `#[repr(align)]` will not reduce the
-// alignment required by the struct, only increase it). We only bother with this
-// because
+// We always want the pointer families for `C` and `P` to match, so provide
+// aliases for use within this module.
+type ErrorDataOwned = ErrorData<Box<Custom>, Box<OsWithPath>>;
+type ErrorDataRef<'a> = ErrorData<&'a Custom, &'a OsWithPath>;
+type ErrorDataMutRef<'a> = ErrorData<&'a mut Custom, &'a mut OsWithPath>;
+
+// When using the bitpacked repr (e.g. 64 bit), we need 8 byte alignment for all
+// of the pointer types used in the error data. On 32 bit we don't care what the
+// alignment is, so we don't set it, since 8 will be slightly higher than it
+// would otherwise get.
 #[cfg_attr(target_pointer_width = "64", repr(align(8)))]
 #[derive(Debug)]
 pub(crate) struct SimpleMessage {
@@ -119,14 +122,23 @@ pub(crate) macro const_io_error($kind:expr, $message:expr $(,)?) {
     })
 }
 
-// As with `SimpleMessage`: `#[repr(align(4))]` here is just because
-// repr_bitpacked's encoding requires it. In practice it almost certainly be
-// already be this high or higher.
+// See `SimpleMessage`'s comment for note on alignment.
 #[derive(Debug)]
-#[repr(align(4))]
+#[cfg_attr(target_pointer_width = "64", repr(align(8)))]
 struct Custom {
     kind: ErrorKind,
     error: Box<dyn error::Error + Send + Sync>,
+}
+
+// Used to store Os errors where the caller has indicated that there's an
+// associated path.
+//
+// See `SimpleMessage`'s comment for note on alignment.
+#[derive(Debug)]
+#[cfg_attr(target_pointer_width = "64", repr(align(8)))]
+struct OsWithPath {
+    code: i32,
+    path: Box<Path>,
 }
 
 /// A list specifying general categories of I/O error.
@@ -633,6 +645,7 @@ impl Error {
     pub fn raw_os_error(&self) -> Option<i32> {
         match self.repr.data() {
             ErrorData::Os(i) => Some(i),
+            ErrorData::OsWithPath(o) => Some(o.code),
             ErrorData::Custom(..) => None,
             ErrorData::Simple(..) => None,
             ErrorData::SimpleMessage(..) => None,
@@ -672,6 +685,7 @@ impl Error {
     pub fn get_ref(&self) -> Option<&(dyn error::Error + Send + Sync + 'static)> {
         match self.repr.data() {
             ErrorData::Os(..) => None,
+            ErrorData::OsWithPath(..) => None,
             ErrorData::Simple(..) => None,
             ErrorData::SimpleMessage(..) => None,
             ErrorData::Custom(c) => Some(&*c.error),
@@ -746,10 +760,26 @@ impl Error {
     pub fn get_mut(&mut self) -> Option<&mut (dyn error::Error + Send + Sync + 'static)> {
         match self.repr.data_mut() {
             ErrorData::Os(..) => None,
+            ErrorData::OsWithPath(..) => None,
             ErrorData::Simple(..) => None,
             ErrorData::SimpleMessage(..) => None,
             ErrorData::Custom(c) => Some(&mut *c.error),
         }
+    }
+
+    pub(crate) fn with_path(self, path: &crate::path::Path) -> Self {
+        // We do two `if let`s to avoid a borrow checking complaint.
+        let code = if let ErrorData::Os(code) = self.repr.data() { Some(code) } else { None };
+        if let Some(code) = code { Self::new_os_with_path(code, path) } else { self }
+    }
+
+    fn new_os_with_path(code: i32, path: &Path) -> Self {
+        Self { repr: Repr::new_os_with_path(Box::new(OsWithPath { code, path: path.into() })) }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn last_os_error_with_path(p: &Path) -> Error {
+        Error::new_os_with_path(sys::os::errno() as i32, p)
     }
 
     /// Consumes the `Error`, returning its inner error (if any).
@@ -785,6 +815,7 @@ impl Error {
     pub fn into_inner(self) -> Option<Box<dyn error::Error + Send + Sync>> {
         match self.repr.into_data() {
             ErrorData::Os(..) => None,
+            ErrorData::OsWithPath(..) => None,
             ErrorData::Simple(..) => None,
             ErrorData::SimpleMessage(..) => None,
             ErrorData::Custom(c) => Some(c.error),
@@ -815,6 +846,7 @@ impl Error {
     pub fn kind(&self) -> ErrorKind {
         match self.repr.data() {
             ErrorData::Os(code) => sys::decode_error_kind(code),
+            ErrorData::OsWithPath(data) => sys::decode_error_kind(data.code),
             ErrorData::Custom(c) => c.kind,
             ErrorData::Simple(kind) => kind,
             ErrorData::SimpleMessage(m) => m.kind,
@@ -831,6 +863,13 @@ impl fmt::Debug for Repr {
                 .field("kind", &sys::decode_error_kind(code))
                 .field("message", &sys::os::error_string(code))
                 .finish(),
+            ErrorData::OsWithPath(code_and_path) => fmt
+                .debug_struct("Os")
+                .field("code", &code_and_path.code)
+                .field("kind", &sys::decode_error_kind(code_and_path.code))
+                .field("message", &sys::os::error_string(code_and_path.code))
+                .field("path", &code_and_path.path)
+                .finish(),
             ErrorData::Custom(c) => fmt::Debug::fmt(&c, fmt),
             ErrorData::Simple(kind) => fmt.debug_tuple("Kind").field(&kind).finish(),
             ErrorData::SimpleMessage(msg) => fmt
@@ -846,7 +885,7 @@ impl fmt::Debug for Repr {
 impl fmt::Display for Error {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.repr.data() {
-            ErrorData::Os(code) => {
+            ErrorData::Os(code) | ErrorData::OsWithPath(&OsWithPath { code, .. }) => {
                 let detail = sys::os::error_string(code);
                 write!(fmt, "{detail} (os error {code})")
             }
@@ -862,7 +901,9 @@ impl error::Error for Error {
     #[allow(deprecated, deprecated_in_future)]
     fn description(&self) -> &str {
         match self.repr.data() {
-            ErrorData::Os(..) | ErrorData::Simple(..) => self.kind().as_str(),
+            ErrorData::Os(..) | ErrorData::Simple(..) | ErrorData::OsWithPath(..) => {
+                self.kind().as_str()
+            }
             ErrorData::SimpleMessage(msg) => msg.message,
             ErrorData::Custom(c) => c.error.description(),
         }
@@ -872,6 +913,7 @@ impl error::Error for Error {
     fn cause(&self) -> Option<&dyn error::Error> {
         match self.repr.data() {
             ErrorData::Os(..) => None,
+            ErrorData::OsWithPath(..) => None,
             ErrorData::Simple(..) => None,
             ErrorData::SimpleMessage(..) => None,
             ErrorData::Custom(c) => c.error.cause(),
@@ -881,6 +923,7 @@ impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self.repr.data() {
             ErrorData::Os(..) => None,
+            ErrorData::OsWithPath(..) => None,
             ErrorData::Simple(..) => None,
             ErrorData::SimpleMessage(..) => None,
             ErrorData::Custom(c) => c.error.source(),
