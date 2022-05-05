@@ -1,9 +1,12 @@
 use crate::os::unix::prelude::*;
 
+#[cfg(test)]
+mod tests;
+
 use crate::ffi::{CStr, CString, OsStr, OsString};
 use crate::fmt;
 use crate::io::{self, Error, IoSlice, IoSliceMut, ReadBuf, SeekFrom};
-use crate::mem;
+use crate::mem::{self, MaybeUninit};
 use crate::os::unix::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd};
 use crate::path::{Path, PathBuf};
 use crate::ptr;
@@ -827,8 +830,7 @@ impl OpenOptions {
 
 impl File {
     pub fn open(path: &Path, opts: &OpenOptions) -> io::Result<File> {
-        let path = cstr(path)?;
-        File::open_c(&path, opts)
+        with_cstr(path, |path| File::open_c(path, opts))
     }
 
     pub fn open_c(path: &CStr, opts: &OpenOptions) -> io::Result<File> {
@@ -986,9 +988,10 @@ impl DirBuilder {
     }
 
     pub fn mkdir(&self, p: &Path) -> io::Result<()> {
-        let p = cstr(p)?;
-        cvt(unsafe { libc::mkdir(p.as_ptr(), self.mode) })?;
-        Ok(())
+        with_cstr(p, |p| {
+            cvt(unsafe { libc::mkdir(p.as_ptr(), self.mode) })?;
+            Ok(())
+        })
     }
 
     pub fn set_mode(&mut self, mode: u32) {
@@ -998,6 +1001,63 @@ impl DirBuilder {
 
 fn cstr(path: &Path) -> io::Result<CString> {
     Ok(CString::new(path.as_os_str().as_bytes())?)
+}
+
+fn with_cstr<T, F>(path: &Path, f: F) -> io::Result<T>
+where
+    F: FnOnce(&CStr) -> io::Result<T>,
+{
+    const MAX_INLINE: usize = 256;
+
+    let mut stack_buf: [MaybeUninit<u8>; MAX_INLINE] = MaybeUninit::uninit_array();
+    let mut heap_buf: Vec<u8> = Vec::new();
+
+    return make_cstr(&path, &mut heap_buf, &mut stack_buf).and_then(f);
+
+    // Split out because most of doesn't need to be duplicated for each `F`.
+    fn make_cstr<'a>(
+        path: &Path,
+        heap_buf: &'a mut Vec<u8>,
+        stack_buf: &'a mut [MaybeUninit<u8>; MAX_INLINE],
+    ) -> io::Result<&'a CStr> {
+        let path_bytes = path.as_os_str().as_bytes();
+        let len_with_nul = path_bytes.len() + 1;
+        let buffer: &mut [MaybeUninit<u8>] = if let Some(buf) = stack_buf.get_mut(..len_with_nul) {
+            buf
+        } else {
+            heap_buf.clear();
+            heap_buf.reserve(len_with_nul);
+            &mut heap_buf.spare_capacity_mut()[..len_with_nul]
+        };
+        // Initializes the last byte of `bytes_with_nul_len`
+        buffer[path_bytes.len()] = MaybeUninit::new(0);
+        let bytes_with_nul = unsafe {
+            // Safety:
+            // - `path_bytes` is shared reference, and `buffer` is a mutable one, so
+            //   they cannot alias.
+            // - `buffer` already wrote to `buffer[path_bytes.len()]`, so we know that the
+            //   size is correct.
+            buffer
+                .as_mut_ptr()
+                .copy_from_nonoverlapping(path_bytes.as_ptr().cast(), path_bytes.len());
+            // Safety:
+            // - The `copy_from_nonoverlapping` line above initializes the first
+            //   `path_bytes.len()` path_bytes.
+            // - The `buffer[path_bytes.len()] = ...` line (above) initializes the
+            //   final byte.
+            MaybeUninit::slice_assume_init_ref(&buffer[..len_with_nul])
+        };
+        CStr::from_bytes_with_nul(bytes_with_nul).map_err(|_| {
+            io::const_io_error!(io::ErrorKind::InvalidInput, "data provided contains a nul byte")
+        })
+    }
+}
+
+fn with_cstr2<T, F>(p1: &Path, p2: &Path, f: F) -> io::Result<T>
+where
+    F: FnOnce(&CStr, &CStr) -> io::Result<T>,
+{
+    with_cstr(p1, |p1| with_cstr(p2, |p2| f(p1, p2)))
 }
 
 impl AsInner<FileDesc> for File {
@@ -1133,8 +1193,7 @@ impl fmt::Debug for File {
 
 pub fn readdir(p: &Path) -> io::Result<ReadDir> {
     let root = p.to_path_buf();
-    let p = cstr(p)?;
-    unsafe {
+    with_cstr(p, |p| unsafe {
         let ptr = libc::opendir(p.as_ptr());
         if ptr.is_null() {
             Err(Error::last_os_error())
@@ -1153,137 +1212,141 @@ pub fn readdir(p: &Path) -> io::Result<ReadDir> {
                 end_of_stream: false,
             })
         }
-    }
+    })
 }
 
 pub fn unlink(p: &Path) -> io::Result<()> {
-    let p = cstr(p)?;
-    cvt(unsafe { libc::unlink(p.as_ptr()) })?;
-    Ok(())
+    with_cstr(p, |p| {
+        cvt(unsafe { libc::unlink(p.as_ptr()) })?;
+        Ok(())
+    })
 }
 
 pub fn rename(old: &Path, new: &Path) -> io::Result<()> {
-    let old = cstr(old)?;
-    let new = cstr(new)?;
-    cvt(unsafe { libc::rename(old.as_ptr(), new.as_ptr()) })?;
-    Ok(())
+    with_cstr2(old, new, |old, new| {
+        cvt(unsafe { libc::rename(old.as_ptr(), new.as_ptr()) })?;
+        Ok(())
+    })
 }
 
 pub fn set_perm(p: &Path, perm: FilePermissions) -> io::Result<()> {
-    let p = cstr(p)?;
-    cvt_r(|| unsafe { libc::chmod(p.as_ptr(), perm.mode) })?;
-    Ok(())
+    with_cstr(p, |p| {
+        cvt_r(|| unsafe { libc::chmod(p.as_ptr(), perm.mode) })?;
+        Ok(())
+    })
 }
 
 pub fn rmdir(p: &Path) -> io::Result<()> {
-    let p = cstr(p)?;
-    cvt(unsafe { libc::rmdir(p.as_ptr()) })?;
-    Ok(())
+    with_cstr(p, |p| {
+        cvt(unsafe { libc::rmdir(p.as_ptr()) })?;
+        Ok(())
+    })
 }
 
 pub fn readlink(p: &Path) -> io::Result<PathBuf> {
-    let c_path = cstr(p)?;
-    let p = c_path.as_ptr();
+    with_cstr(p, |c_path| {
+        let p = c_path.as_ptr();
 
-    let mut buf = Vec::with_capacity(256);
+        let mut buf = Vec::with_capacity(256);
 
-    loop {
-        let buf_read =
-            cvt(unsafe { libc::readlink(p, buf.as_mut_ptr() as *mut _, buf.capacity()) })? as usize;
+        loop {
+            let buf_read =
+                cvt(unsafe { libc::readlink(p, buf.as_mut_ptr() as *mut _, buf.capacity()) })?
+                    as usize;
 
-        unsafe {
-            buf.set_len(buf_read);
+            unsafe {
+                buf.set_len(buf_read);
+            }
+
+            if buf_read != buf.capacity() {
+                buf.shrink_to_fit();
+
+                return Ok(PathBuf::from(OsString::from_vec(buf)));
+            }
+
+            // Trigger the internal buffer resizing logic of `Vec` by requiring
+            // more space than the current capacity. The length is guaranteed to be
+            // the same as the capacity due to the if statement above.
+            buf.reserve(1);
         }
-
-        if buf_read != buf.capacity() {
-            buf.shrink_to_fit();
-
-            return Ok(PathBuf::from(OsString::from_vec(buf)));
-        }
-
-        // Trigger the internal buffer resizing logic of `Vec` by requiring
-        // more space than the current capacity. The length is guaranteed to be
-        // the same as the capacity due to the if statement above.
-        buf.reserve(1);
-    }
+    })
 }
 
 pub fn symlink(original: &Path, link: &Path) -> io::Result<()> {
-    let original = cstr(original)?;
-    let link = cstr(link)?;
-    cvt(unsafe { libc::symlink(original.as_ptr(), link.as_ptr()) })?;
-    Ok(())
+    with_cstr2(original, link, |original, link| {
+        cvt(unsafe { libc::symlink(original.as_ptr(), link.as_ptr()) })?;
+        Ok(())
+    })
 }
 
 pub fn link(original: &Path, link: &Path) -> io::Result<()> {
-    let original = cstr(original)?;
-    let link = cstr(link)?;
-    cfg_if::cfg_if! {
-        if #[cfg(any(target_os = "vxworks", target_os = "redox", target_os = "android", target_os = "espidf"))] {
-            // VxWorks, Redox and ESP-IDF lack `linkat`, so use `link` instead. POSIX leaves
-            // it implementation-defined whether `link` follows symlinks, so rely on the
-            // `symlink_hard_link` test in library/std/src/fs/tests.rs to check the behavior.
-            // Android has `linkat` on newer versions, but we happen to know `link`
-            // always has the correct behavior, so it's here as well.
-            cvt(unsafe { libc::link(original.as_ptr(), link.as_ptr()) })?;
-        } else if #[cfg(target_os = "macos")] {
-            // On MacOS, older versions (<=10.9) lack support for linkat while newer
-            // versions have it. We want to use linkat if it is available, so we use weak!
-            // to check. `linkat` is preferable to `link` because it gives us a flag to
-            // specify how symlinks should be handled. We pass 0 as the flags argument,
-            // meaning it shouldn't follow symlinks.
-            weak!(fn linkat(c_int, *const c_char, c_int, *const c_char, c_int) -> c_int);
-
-            if let Some(f) = linkat.get() {
-                cvt(unsafe { f(libc::AT_FDCWD, original.as_ptr(), libc::AT_FDCWD, link.as_ptr(), 0) })?;
-            } else {
+    with_cstr2(original, link, |original, link| {
+        cfg_if::cfg_if! {
+            if #[cfg(any(target_os = "vxworks", target_os = "redox", target_os = "android", target_os = "espidf"))] {
+                // VxWorks, Redox and ESP-IDF lack `linkat`, so use `link` instead. POSIX leaves
+                // it implementation-defined whether `link` follows symlinks, so rely on the
+                // `symlink_hard_link` test in library/std/src/fs/tests.rs to check the behavior.
+                // Android has `linkat` on newer versions, but we happen to know `link`
+                // always has the correct behavior, so it's here as well.
                 cvt(unsafe { libc::link(original.as_ptr(), link.as_ptr()) })?;
-            };
-        } else {
-            // Where we can, use `linkat` instead of `link`; see the comment above
-            // this one for details on why.
-            cvt(unsafe { libc::linkat(libc::AT_FDCWD, original.as_ptr(), libc::AT_FDCWD, link.as_ptr(), 0) })?;
+            } else if #[cfg(target_os = "macos")] {
+                // On MacOS, older versions (<=10.9) lack support for linkat while newer
+                // versions have it. We want to use linkat if it is available, so we use weak!
+                // to check. `linkat` is preferable to `link` because it gives us a flag to
+                // specify how symlinks should be handled. We pass 0 as the flags argument,
+                // meaning it shouldn't follow symlinks.
+                weak!(fn linkat(c_int, *const c_char, c_int, *const c_char, c_int) -> c_int);
+
+                if let Some(f) = linkat.get() {
+                    cvt(unsafe { f(libc::AT_FDCWD, original.as_ptr(), libc::AT_FDCWD, link.as_ptr(), 0) })?;
+                } else {
+                    cvt(unsafe { libc::link(original.as_ptr(), link.as_ptr()) })?;
+                };
+            } else {
+                // Where we can, use `linkat` instead of `link`; see the comment above
+                // this one for details on why.
+                cvt(unsafe { libc::linkat(libc::AT_FDCWD, original.as_ptr(), libc::AT_FDCWD, link.as_ptr(), 0) })?;
+            }
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 pub fn stat(p: &Path) -> io::Result<FileAttr> {
-    let p = cstr(p)?;
-
-    cfg_has_statx! {
-        if let Some(ret) = unsafe { try_statx(
-            libc::AT_FDCWD,
-            p.as_ptr(),
-            libc::AT_STATX_SYNC_AS_STAT,
-            libc::STATX_ALL,
-        ) } {
-            return ret;
+    with_cstr(p, |p| {
+        cfg_has_statx! {
+            if let Some(ret) = unsafe { try_statx(
+                libc::AT_FDCWD,
+                p.as_ptr(),
+                libc::AT_STATX_SYNC_AS_STAT,
+                libc::STATX_ALL,
+            ) } {
+                return ret;
+            }
         }
-    }
-
-    let mut stat: stat64 = unsafe { mem::zeroed() };
-    cvt(unsafe { stat64(p.as_ptr(), &mut stat) })?;
-    Ok(FileAttr::from_stat64(stat))
+        let mut stat: stat64 = unsafe { mem::zeroed() };
+        cvt(unsafe { stat64(p.as_ptr(), &mut stat) })?;
+        Ok(FileAttr::from_stat64(stat))
+    })
 }
 
 pub fn lstat(p: &Path) -> io::Result<FileAttr> {
-    let p = cstr(p)?;
-
-    cfg_has_statx! {
-        if let Some(ret) = unsafe { try_statx(
-            libc::AT_FDCWD,
-            p.as_ptr(),
-            libc::AT_SYMLINK_NOFOLLOW | libc::AT_STATX_SYNC_AS_STAT,
-            libc::STATX_ALL,
-        ) } {
-            return ret;
+    with_cstr(p, |p| {
+        cfg_has_statx! {
+            if let Some(ret) = unsafe { try_statx(
+                libc::AT_FDCWD,
+                p.as_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW | libc::AT_STATX_SYNC_AS_STAT,
+                libc::STATX_ALL,
+            ) } {
+                return ret;
+            }
         }
-    }
 
-    let mut stat: stat64 = unsafe { mem::zeroed() };
-    cvt(unsafe { lstat64(p.as_ptr(), &mut stat) })?;
-    Ok(FileAttr::from_stat64(stat))
+        let mut stat: stat64 = unsafe { mem::zeroed() };
+        cvt(unsafe { lstat64(p.as_ptr(), &mut stat) })?;
+        Ok(FileAttr::from_stat64(stat))
+    })
 }
 
 pub fn canonicalize(p: &Path) -> io::Result<PathBuf> {
@@ -1446,9 +1509,9 @@ pub fn copy(from: &Path, to: &Path) -> io::Result<u64> {
     // Opportunistically attempt to create a copy-on-write clone of `from`
     // using `fclonefileat`.
     if HAS_FCLONEFILEAT.load(Ordering::Relaxed) {
-        let to = cstr(to)?;
-        let clonefile_result =
-            cvt(unsafe { fclonefileat(reader.as_raw_fd(), libc::AT_FDCWD, to.as_ptr(), 0) });
+        let clonefile_result: io::Result<i32> = with_cstr(to, |to| {
+            cvt(unsafe { fclonefileat(reader.as_raw_fd(), libc::AT_FDCWD, to.as_ptr(), 0) })
+        });
         match clonefile_result {
             Ok(_) => return Ok(reader_metadata.len()),
             Err(err) => match err.raw_os_error() {
@@ -1492,9 +1555,10 @@ pub fn copy(from: &Path, to: &Path) -> io::Result<u64> {
 }
 
 pub fn chown(path: &Path, uid: u32, gid: u32) -> io::Result<()> {
-    let path = cstr(path)?;
-    cvt(unsafe { libc::chown(path.as_ptr(), uid as libc::uid_t, gid as libc::gid_t) })?;
-    Ok(())
+    with_cstr(path, |path| {
+        cvt(unsafe { libc::chown(path.as_ptr(), uid as libc::uid_t, gid as libc::gid_t) })?;
+        Ok(())
+    })
 }
 
 pub fn fchown(fd: c_int, uid: u32, gid: u32) -> io::Result<()> {
@@ -1503,16 +1567,18 @@ pub fn fchown(fd: c_int, uid: u32, gid: u32) -> io::Result<()> {
 }
 
 pub fn lchown(path: &Path, uid: u32, gid: u32) -> io::Result<()> {
-    let path = cstr(path)?;
-    cvt(unsafe { libc::lchown(path.as_ptr(), uid as libc::uid_t, gid as libc::gid_t) })?;
-    Ok(())
+    with_cstr(path, |path| {
+        cvt(unsafe { libc::lchown(path.as_ptr(), uid as libc::uid_t, gid as libc::gid_t) })?;
+        Ok(())
+    })
 }
 
 #[cfg(not(any(target_os = "fuchsia", target_os = "vxworks")))]
 pub fn chroot(dir: &Path) -> io::Result<()> {
-    let dir = cstr(dir)?;
-    cvt(unsafe { libc::chroot(dir.as_ptr()) })?;
-    Ok(())
+    with_cstr(dir, |dir| {
+        cvt(unsafe { libc::chroot(dir.as_ptr()) })?;
+        Ok(())
+    })
 }
 
 pub use remove_dir_impl::remove_dir_all;
