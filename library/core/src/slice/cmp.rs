@@ -17,6 +17,19 @@ extern "C" {
     fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> ffi::c_int;
 }
 
+/// Equivalent to `memcmp`, but with a fast-path for identical pointers.
+///
+/// Safety: Same as `memcmp`.
+#[inline]
+unsafe fn mem_cmp(s1: *const u8, s2: *const u8, n: usize) -> ffi::c_int {
+    if core::ptr::eq(s1, s2) {
+        0
+    } else {
+        // SAFETY: we have the same requirement as `memcmp`.
+        unsafe { memcmp(s1, s2, n) }
+    }
+}
+
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<A, B> PartialEq<[B]> for [A]
 where
@@ -88,7 +101,7 @@ where
         // The two slices have been checked to have the same size above.
         unsafe {
             let size = mem::size_of_val(self);
-            memcmp(self.as_ptr() as *const u8, other.as_ptr() as *const u8, size) == 0
+            mem_cmp(self.as_ptr() as *const u8, other.as_ptr() as *const u8, size) == 0
         }
     }
 }
@@ -195,7 +208,7 @@ impl SliceOrd for u8 {
         // SAFETY: `left` and `right` are references and are thus guaranteed to be valid.
         // We use the minimum of both lengths which guarantees that both regions are
         // valid for reads in that interval.
-        let mut order = unsafe { memcmp(left.as_ptr(), right.as_ptr(), len) as isize };
+        let mut order = unsafe { mem_cmp(left.as_ptr(), right.as_ptr(), len) as isize };
         if order == 0 {
             order = diff;
         }
