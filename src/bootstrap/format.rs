@@ -37,7 +37,6 @@ fn rustfmt(src: &Path, rustfmt: &Path, paths: &[PathBuf], check: bool) -> impl F
     }
 }
 
-#[derive(serde::Deserialize)]
 struct RustfmtConfig {
     ignore: Vec<String>,
 }
@@ -57,7 +56,18 @@ pub fn format(build: &Build, check: bool, paths: &[PathBuf]) {
         return;
     }
     let rustfmt_config = t!(std::fs::read_to_string(&rustfmt_config));
-    let rustfmt_config: RustfmtConfig = t!(toml::from_str(&rustfmt_config));
+    let rustfmt_config: toml::value::Table = t!(toml::from_str(&rustfmt_config));
+    let rustfmt_config = match rustfmt_config.get("ignore") {
+        None => panic!("missing `ignore` in rustfmt config: {rustfmt_config:?}"),
+        Some(toml::value::Value::Array(arr)) => RustfmtConfig {
+            ignore: arr
+                .iter()
+                .map(|v| v.as_str().map(ToOwned::to_owned))
+                .collect::<Option<Vec<_>>>()
+                .unwrap_or_else(|| panic!("weird ignore list in rustfmt config: {arr:?}")),
+        },
+        Some(v) => panic!("expected array in rustfmt.ignore, got {v:?}"),
+    };
     let mut ignore_fmt = ignore::overrides::OverrideBuilder::new(&build.src);
     for ignore in rustfmt_config.ignore {
         ignore_fmt.add(&format!("!{}", ignore)).expect(&ignore);

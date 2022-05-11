@@ -222,7 +222,7 @@ dependencies = [
  "opener",
  "pretty_assertions",
  "serde",
- "serde_json",
+ "smoljson",
  "tar",
  "toml",
  "winapi",
@@ -4846,6 +4846,12 @@ name = "smallvec"
 version = "1.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ecab6c735a6bb4139c0caafd0cc3635748bbb3acf4550e8138122099251f309"
+
+[[package]]
+name = "smoljson"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77c0b30ba32d515fa58c02ffbc174c4568671a29d6b845816d006d325f8b3945"
 
 [[package]]
 name = "snap"

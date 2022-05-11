@@ -1,18 +1,39 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use serde::Deserialize;
-
 use crate::cache::INTERNER;
 use crate::util::output;
 use crate::{Build, Crate};
 
-#[derive(Deserialize)]
+fn parse_metadata(s: &str) -> Option<Output> {
+    let s = smoljson::Value::from_str(s).ok()?;
+    let packages: Vec<Package> = s["packages"]
+        .as_array()?
+        .iter()
+        .map(|p| {
+            let name = p["name"].as_str()?.to_owned();
+            let source = p["source"].as_str().map(ToOwned::to_owned);
+            let manifest_path = p["manifest_path"].as_str()?.to_owned();
+            let dependencies = p["dependencies"]
+                .as_array()?
+                .iter()
+                .map(|dep| {
+                    Some(Dependency {
+                        name: dep["name"].as_str()?.to_owned(),
+                        source: dep["source"].as_str().map(ToOwned::to_owned),
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(Package { name, source, manifest_path, dependencies })
+        })
+        .collect::<Option<_>>()?;
+    Some(Output { packages })
+}
+
 struct Output {
     packages: Vec<Package>,
 }
 
-#[derive(Deserialize)]
 struct Package {
     name: String,
     source: Option<String>,
@@ -20,7 +41,6 @@ struct Package {
     dependencies: Vec<Dependency>,
 }
 
-#[derive(Deserialize)]
 struct Dependency {
     name: String,
     source: Option<String>,
@@ -36,8 +56,10 @@ pub fn build(build: &mut Build) {
         .arg("--no-deps")
         .arg("--manifest-path")
         .arg(build.src.join("Cargo.toml"));
+
     let output = output(&mut cargo);
-    let output: Output = serde_json::from_str(&output).unwrap();
+    let output: Output =
+        parse_metadata(&output).expect("failed to parse metadata (probably `smoljson` bug, tbh)");
     for package in output.packages {
         if package.source.is_none() {
             let name = INTERNER.intern_string(package.name);

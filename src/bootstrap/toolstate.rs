@@ -1,6 +1,5 @@
 use crate::builder::{Builder, RunConfig, ShouldRun, Step};
 use crate::util::t;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::fmt;
@@ -24,8 +23,7 @@ const OS: Option<&str> = None;
 
 type ToolstateData = HashMap<Box<str>, ToolState>;
 
-#[derive(Copy, Clone, Debug, Deserialize, Serialize, PartialEq, PartialOrd)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
 /// Whether a tool can be compiled, tested or neither
 pub enum ToolState {
     /// The tool compiles successfully, but the test suite fails
@@ -34,6 +32,18 @@ pub enum ToolState {
     TestPass = 2,
     /// The tool can't even be compiled
     BuildFail = 0,
+}
+
+impl core::str::FromStr for ToolState {
+    type Err = ();
+    fn from_str(src: &str) -> Result<Self, Self::Err> {
+        Ok(match src {
+            "test-fail" => Self::TestFail,
+            "test-pass" => Self::TestPass,
+            "build-fail" => Self::BuildFail,
+            _ => return Err(()),
+        })
+    }
 }
 
 impl fmt::Display for ToolState {
@@ -249,10 +259,8 @@ impl Builder<'_> {
                 // Ensure the parent directory always exists
                 t!(std::fs::create_dir_all(parent));
             }
-            let mut file =
-                t!(fs::OpenOptions::new().create(true).write(true).read(true).open(path));
-
-            serde_json::from_reader(&mut file).unwrap_or_default()
+            let file = t!(fs::OpenOptions::new().create(true).write(true).read(true).open(path));
+            read_toolstates(file).unwrap_or_default()
         } else {
             Default::default()
         }
@@ -276,6 +284,7 @@ impl Builder<'_> {
             return;
         }
         if let Some(ref path) = self.config.save_toolstates {
+            use std::io::Write;
             if let Some(parent) = path.parent() {
                 // Ensure the parent directory always exists
                 t!(std::fs::create_dir_all(parent));
@@ -284,13 +293,43 @@ impl Builder<'_> {
                 t!(fs::OpenOptions::new().create(true).read(true).write(true).open(path));
 
             let mut current_toolstates: HashMap<Box<str>, ToolState> =
-                serde_json::from_reader(&mut file).unwrap_or_default();
+                read_toolstates(&mut file).unwrap_or_default();
             current_toolstates.insert(tool.into(), state);
             t!(file.seek(SeekFrom::Start(0)));
             t!(file.set_len(0));
-            t!(serde_json::to_writer(file, &current_toolstates));
+            let text = unparse_toolstate(&current_toolstates);
+            t!(file.write_all(text.as_bytes()));
         }
     }
+}
+
+fn read_toolstates<R: std::io::Read>(mut file: R) -> std::io::Result<ToolstateData> {
+    let mut buf = String::new();
+    t!(file.read_to_string(&mut buf));
+    parse_toolstates(&buf).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid toolstate JSON")
+    })
+}
+
+fn parse_toolstates(json: &str) -> Option<ToolstateData> {
+    let json = smoljson::Value::from_str(&json).ok()?;
+    json.as_object()?
+        .into_iter()
+        .map(|(k, v)| {
+            let ts = v.as_str()?.parse::<ToolState>().ok()?;
+            let boxstr: Box<str> = k.to_string().into();
+            Some((boxstr, ts))
+        })
+        .collect()
+}
+fn unparse_toolstate(ts: &ToolstateData) -> String {
+    let mut w = smoljson::write::Writer::new(false);
+    let mut o = w.object();
+    for (k, state) in ts.iter() {
+        o.put(k, state.to_string().as_str());
+    }
+    drop(o);
+    w.finish()
 }
 
 fn toolstate_repo() -> String {
@@ -353,8 +392,8 @@ fn prepare_toolstate_config(token: &str) {
 /// Reads the latest toolstate from the toolstate repo.
 fn read_old_toolstate() -> Vec<RepoState> {
     let latest_path = Path::new(TOOLSTATE_DIR).join("_data").join("latest.json");
-    let old_toolstate = t!(fs::read(latest_path));
-    t!(serde_json::from_slice(&old_toolstate))
+    let old_toolstate = t!(fs::read_to_string(latest_path));
+    t!(RepoState::from_json_array(&old_toolstate).ok_or("Invalid serialized RepoState"))
 }
 
 /// This function `commit_toolstate_change` provides functionality for pushing a change
@@ -448,7 +487,7 @@ fn publish_test_results(current_toolstate: &ToolstateData) {
     let commit = t!(std::process::Command::new("git").arg("rev-parse").arg("HEAD").output());
     let commit = t!(String::from_utf8(commit.stdout));
 
-    let toolstate_serialized = t!(serde_json::to_string(&current_toolstate));
+    let toolstate_serialized = unparse_toolstate(&current_toolstate);
 
     let history_path = Path::new(TOOLSTATE_DIR)
         .join("history")
@@ -459,7 +498,7 @@ fn publish_test_results(current_toolstate: &ToolstateData) {
     t!(fs::write(&history_path, file));
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 struct RepoState {
     tool: String,
     windows: ToolState,
@@ -475,5 +514,17 @@ impl RepoState {
         } else {
             unimplemented!()
         }
+    }
+    fn from_json_array(json: &str) -> Option<Vec<Self>> {
+        let json = smoljson::Value::from_str(json).ok()?;
+        json.as_array()?
+            .into_iter()
+            .map(|json| {
+                let tool = json["tool"].as_str()?.to_string();
+                let windows = json["windows"].as_str()?.parse::<ToolState>().ok()?;
+                let linux = json["linux"].as_str()?.parse::<ToolState>().ok()?;
+                Some(Self { tool, windows, linux })
+            })
+            .collect()
     }
 }

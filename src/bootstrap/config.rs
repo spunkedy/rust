@@ -369,22 +369,25 @@ impl Target {
         target
     }
 }
-/// Structure of the `config.toml` file that configuration is read from.
-///
-/// This structure uses `Decodable` to automatically decode a TOML configuration
-/// file into this format, and then this is traversed and written into the above
-/// `Config` structure.
-#[derive(Deserialize, Default)]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
-struct TomlConfig {
-    changelog_seen: Option<usize>,
-    build: Option<Build>,
-    install: Option<Install>,
-    llvm: Option<Llvm>,
-    rust: Option<Rust>,
-    target: Option<HashMap<String, TomlTarget>>,
-    dist: Option<Dist>,
-    profile: Option<String>,
+
+define_config! {
+    @no_derive_merge;
+    /// Structure of the `config.toml` file that configuration is read from.
+    ///
+    /// This structure uses `Decodable` to automatically decode a TOML configuration
+    /// file into this format, and then this is traversed and written into the above
+    /// `Config` structure.
+    #[derive(Default)]
+    struct TomlConfig {
+        changelog_seen: Option<usize> = "changelog-seen",
+        build: Option<Build> = "build",
+        install: Option<Install> = "install",
+        llvm: Option<Llvm> = "llvm",
+        rust: Option<Rust> = "rust",
+        target: Option<HashMap<String, TomlTarget>> = "target",
+        dist: Option<Dist> = "dist",
+        profile: Option<String> = "profile",
+    }
 }
 
 trait Merge {
@@ -417,31 +420,25 @@ impl Merge for TomlConfig {
 // We are using a decl macro instead of a derive proc macro here to reduce the compile time of
 // rustbuild.
 macro_rules! define_config {
-    ($(#[$attr:meta])* struct $name:ident {
-        $($field:ident: Option<$field_ty:ty> = $field_key:literal,)*
-    }) => {
+    (
+        @no_derive_merge;
+        $(#[$attr:meta])*
+        struct $name:ident {
+            $($field:ident: Option<$field_ty:ty> = $field_key:literal,)*
+        }
+    ) => {
         $(#[$attr])*
         struct $name {
             $($field: Option<$field_ty>,)*
         }
 
-        impl Merge for $name {
-            fn merge(&mut self, other: Self) {
-                $(
-                    if !self.$field.is_some() {
-                        self.$field = other.$field;
-                    }
-                )*
-            }
-        }
-
         // The following is a trimmed version of what serde_derive generates. All parts not relevant
         // for toml deserialization have been removed. This reduces the binary size and improves
         // compile time of rustbuild.
-        impl<'de> Deserialize<'de> for $name {
+        impl<'de> serde::de::Deserialize<'de> for $name {
             fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
             where
-                D: Deserializer<'de>,
+                D: serde::de::Deserializer<'de>,
             {
                 struct Field;
                 impl<'de> serde::de::Visitor<'de> for Field {
@@ -450,7 +447,6 @@ macro_rules! define_config {
                         f.write_str(concat!("struct ", stringify!($name)))
                     }
 
-                    #[inline]
                     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
                     where
                         A: serde::de::MapAccess<'de>,
@@ -491,16 +487,40 @@ macro_rules! define_config {
                 const FIELDS: &'static [&'static str] = &[
                     $($field_key,)*
                 ];
-                Deserializer::deserialize_struct(
-                    deserializer,
+                deserializer.deserialize_struct(
                     stringify!($name),
                     FIELDS,
                     Field,
                 )
             }
         }
-    }
+    };
+    (
+        $(#[$attr:meta])*
+        struct $name:ident {
+            $($field:ident: Option<$field_ty:ty> = $field_key:literal,)*
+        }
+    ) => {
+        define_config! {
+            @no_derive_merge;
+            $(#[$attr])*
+            struct $name {
+                $($field: Option<$field_ty> = $field_key,)*
+            }
+        }
+        impl Merge for $name {
+            fn merge(&mut self, other: Self) {
+                $(
+                    if !self.$field.is_some() {
+                        self.$field = other.$field;
+                    }
+                )*
+            }
+        }
+    };
 }
+
+pub(crate) use define_config;
 
 define_config! {
     /// TOML representation of various global build decisions.
@@ -604,8 +624,28 @@ define_config! {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
+impl<'de> Deserialize<'de> for StringOrBool {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = StringOrBool;
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("string or bool")
+            }
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<StringOrBool, E> {
+                Ok(StringOrBool::String(s.into()))
+            }
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<StringOrBool, E> {
+                Ok(StringOrBool::Bool(v))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
 enum StringOrBool {
     String(String),
     Bool(bool),

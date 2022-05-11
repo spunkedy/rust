@@ -16,8 +16,6 @@ use std::path::{Path, PathBuf};
 use std::process::{exit, Command, Stdio};
 use std::str;
 
-use serde::Deserialize;
-
 use crate::builder::Cargo;
 use crate::builder::{Builder, Kind, RunConfig, ShouldRun, Step};
 use crate::cache::{Interned, INTERNER};
@@ -1417,8 +1415,9 @@ pub fn stream_cargo(
     let stdout = BufReader::new(child.stdout.take().unwrap());
     for line in stdout.lines() {
         let line = t!(line);
-        match serde_json::from_str::<CargoMessage<'_>>(&line) {
-            Ok(msg) => {
+
+        match CargoMessage::from_json(&line) {
+            Some(msg) => {
                 if builder.config.json_output {
                     // Forward JSON to stdout.
                     println!("{}", line);
@@ -1426,7 +1425,7 @@ pub fn stream_cargo(
                 cb(msg)
             }
             // If this was informational, just print it out and continue
-            Err(_) => println!("{}", line),
+            None => println!("{}", line),
         }
     }
 
@@ -1442,13 +1441,10 @@ pub fn stream_cargo(
     status.success()
 }
 
-#[derive(Deserialize)]
 pub struct CargoTarget<'a> {
     crate_types: Vec<Cow<'a, str>>,
 }
 
-#[derive(Deserialize)]
-#[serde(tag = "reason", rename_all = "kebab-case")]
 pub enum CargoMessage<'a> {
     CompilerArtifact {
         package_id: Cow<'a, str>,
@@ -1462,4 +1458,37 @@ pub enum CargoMessage<'a> {
     BuildFinished {
         success: bool,
     },
+}
+
+impl<'a> CargoMessage<'a> {
+    fn from_json(s: &'a str) -> Option<Self> {
+        let json = smoljson::Value::from_str(s).ok()?;
+        match json["reason"].as_str()? {
+            "compiler-artifact" => Some(Self::CompilerArtifact {
+                package_id: json["package_id"].as_str()?.to_owned().into(),
+                features: json["features"]
+                    .as_array()?
+                    .into_iter()
+                    .map(|f| f.as_str().map(|s| s.to_owned().into()))
+                    .collect::<Option<Vec<_>>>()?,
+                filenames: json["filenames"]
+                    .as_array()?
+                    .into_iter()
+                    .map(|f| f.as_str().map(|s| s.to_owned().into()))
+                    .collect::<Option<Vec<_>>>()?,
+                target: CargoTarget {
+                    crate_types: json["target"]["crate_types"]
+                        .as_array()?
+                        .into_iter()
+                        .map(|f| f.as_str().map(|s| s.to_owned().into()))
+                        .collect::<Option<Vec<_>>>()?,
+                },
+            }),
+            "build-script-executed" => Some(Self::BuildScriptExecuted {
+                package_id: json["package_id"].as_str()?.to_owned().into(),
+            }),
+            "build-finished" => Some(Self::BuildFinished { success: json["success"].as_bool()? }),
+            _ => None,
+        }
+    }
 }
