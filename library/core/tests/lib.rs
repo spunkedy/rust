@@ -15,7 +15,6 @@
 #![feature(const_nonnull_new)]
 #![feature(const_num_from_num)]
 #![feature(const_ptr_as_ref)]
-#![feature(const_ptr_read)]
 #![feature(const_ptr_write)]
 #![feature(const_trait_impl)]
 #![feature(const_likely)]
