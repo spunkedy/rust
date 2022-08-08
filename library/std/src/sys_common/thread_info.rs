@@ -3,7 +3,7 @@
 
 use crate::cell::RefCell;
 use crate::sys::thread::guard::Guard;
-use crate::thread::Thread;
+use crate::thread::{Thread, ThreadId};
 
 struct ThreadInfo {
     stack_guard: Option<Guard>,
@@ -28,6 +28,10 @@ impl ThreadInfo {
             })
             .ok()
     }
+}
+
+pub fn current_thread_id() -> Option<ThreadId> {
+    ThreadInfo::with(|info| info.thread.id())
 }
 
 pub fn current_thread() -> Option<Thread> {

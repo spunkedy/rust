@@ -155,7 +155,7 @@
 mod tests;
 
 use crate::any::Any;
-use crate::cell::UnsafeCell;
+use crate::cell::{Cell, UnsafeCell};
 use crate::ffi::{CStr, CString};
 use crate::fmt;
 use crate::io;
@@ -1066,6 +1066,53 @@ impl ThreadId {
     #[unstable(feature = "thread_id_value", issue = "67939")]
     pub fn as_u64(&self) -> NonZeroU64 {
         self.0
+    }
+
+    /// Returns the `ThreadId` for the [current thread][current].
+    ///
+    /// This returns the same `ThreadId` that would be returned by
+    /// `std::thread::current().id()`, but can be performed in a more efficient
+    /// manner in some cases.
+    ///
+    /// # Panics
+    ///
+    /// This accesses may panic if called after the thread's local data has been
+    /// destroyed, as it accesses thread local storage.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(current_thread_id)]
+    /// //
+    /// assert_eq!(
+    ///     std::thread::ThreadId::current(),
+    ///     std::thread::current().id(),
+    /// );
+    /// ```
+    ///
+    /// [current]: crate::thread::current
+    #[inline]
+    #[unstable(feature = "current_thread_id", issue = "none")]
+    pub fn current() -> ThreadId {
+        // TODO: it would be nice to avoid the need for this cache, but it does
+        // seem to perf consistency (much more consistent performance this way,
+        // ~1ns vs 1-3ns).
+        thread_local! {
+            static CACHED_ID: Cell<Option<ThreadId>> = const { Cell::new(None) };
+        }
+        #[cold]
+        fn get_and_cache(cache: &Cell<Option<ThreadId>>) -> ThreadId {
+            // This "may" not be possible because it will work if the ThreadId
+            // has already been cached. This is true even though we use `with`,
+            // since it's a type that will return false from `needs_drop`.
+            let id = thread_info::current_thread_id().expect(
+                "use of std::thread::ThreadId::current() may not be possible \
+                after the thread's local data has been destroyed",
+            );
+            cache.set(Some(id));
+            id
+        }
+        CACHED_ID.with(|c| c.get().unwrap_or_else(|| get_and_cache(c)))
     }
 }
 
