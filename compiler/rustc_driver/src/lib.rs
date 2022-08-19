@@ -57,6 +57,9 @@ use std::time::Instant;
 pub mod args;
 pub mod pretty;
 
+#[cfg(feature = "jemalloc")]
+mod alloc;
+
 /// Exit status code used for successful compilation and help output.
 pub const EXIT_SUCCESS: i32 = 0;
 
@@ -1242,6 +1245,7 @@ pub fn report_ice(info: &panic::PanicInfo<'_>, bug_report_url: &str) {
 ///
 /// A custom rustc driver can skip calling this to set up a custom ICE hook.
 pub fn install_ice_hook() {
+    alloc_hack();
     // If the user has not explicitly overridden "RUST_BACKTRACE", then produce
     // full backtraces. When a compiler ICE happens, we want to gather
     // as much information as possible to present in the issue opened
@@ -1348,4 +1352,9 @@ pub fn main() -> ! {
     }
 
     process::exit(exit_code)
+}
+
+pub fn alloc_hack() {
+    #[cfg(feature = "jemalloc")]
+    crate::alloc::ensure_jemalloc_symbols_are_used();
 }
