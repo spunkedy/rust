@@ -1000,6 +1000,7 @@ supported_targets! {
 
     ("aarch64-apple-darwin", aarch64_apple_darwin),
     ("x86_64-apple-darwin", x86_64_apple_darwin),
+    ("x86_64h-apple-darwin", x86_64h_apple_darwin),
     ("i686-apple-darwin", i686_apple_darwin),
 
     ("aarch64-fuchsia", aarch64_fuchsia),

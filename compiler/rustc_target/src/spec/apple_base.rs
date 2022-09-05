@@ -106,7 +106,11 @@ fn deployment_target(var_name: &str) -> Option<(u32, u32)> {
 }
 
 fn macos_default_deployment_target(arch: &str) -> (u32, u32) {
-    if arch == "arm64" { (11, 0) } else { (10, 7) }
+    match arch {
+        "arm64" => (11, 0),
+        "x86_64h" => (10, 8),
+        _ => (10, 7),
+    }
 }
 
 fn macos_deployment_target(arch: &str) -> (u32, u32) {

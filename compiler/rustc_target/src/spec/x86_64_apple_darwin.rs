@@ -2,8 +2,14 @@ use crate::spec::TargetOptions;
 use crate::spec::{FramePointer, LinkerFlavor, SanitizerSet, StackProbeType, Target};
 
 pub fn target() -> Target {
-    let arch = "x86_64";
-    let mut base = super::apple_base::opts("macos", arch, "");
+    base_target("x86_64")
+}
+
+/// Shared code between x86_64-apple-darwin and x86_64h-apple-darwin.
+///
+/// Note: `subarch` should be the first segment of the target triple.
+pub(super) fn base_target(subarch: &'static str) -> Target {
+    let mut base = super::apple_base::opts("macos", subarch, "");
     base.cpu = "core2".into();
     base.max_atomic_width = Some(128); // core2 support cmpxchg16b
     base.frame_pointer = FramePointer::Always;
@@ -17,14 +23,14 @@ pub fn target() -> Target {
     // Clang automatically chooses a more specific target based on
     // MACOSX_DEPLOYMENT_TARGET.  To enable cross-language LTO to work
     // correctly, we do too.
-    let llvm_target = super::apple_base::macos_llvm_target(&arch);
+    let llvm_target = super::apple_base::macos_llvm_target(subarch);
 
     Target {
         llvm_target: llvm_target.into(),
         pointer_width: 64,
         data_layout: "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
             .into(),
-        arch: arch.into(),
+        arch: "x86_64".into(),
         options: TargetOptions { mcount: "\u{1}mcount".into(), ..base },
     }
 }
