@@ -73,6 +73,8 @@ mod platform {
     pub use crate::os::redox::*;
     #[cfg(target_os = "solaris")]
     pub use crate::os::solaris::*;
+    #[cfg(target_os = "tvos")]
+    pub use crate::os::tvos::*;
     #[cfg(target_os = "vxworks")]
     pub use crate::os::vxworks::*;
     #[cfg(target_os = "watchos")]
@@ -94,6 +96,7 @@ pub mod thread;
     target_os = "dragonfly",
     target_os = "freebsd",
     target_os = "ios",
+    target_os = "tvos",
     target_os = "watchos",
     target_os = "macos",
     target_os = "netbsd",

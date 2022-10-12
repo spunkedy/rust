@@ -64,7 +64,13 @@ extern "C" {
     #[cfg_attr(any(target_os = "solaris", target_os = "illumos"), link_name = "___errno")]
     #[cfg_attr(target_os = "nto", link_name = "__get_errno_ptr")]
     #[cfg_attr(
-        any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "watchos"),
+        any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "tvos",
+            target_os = "freebsd",
+            target_os = "watchos"
+        ),
         link_name = "__error"
     )]
     #[cfg_attr(target_os = "haiku", link_name = "_errnop")]
@@ -373,7 +379,7 @@ pub fn current_exe() -> io::Result<PathBuf> {
     Ok(PathBuf::from(OsString::from_vec(e)))
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios", target_os = "watchos"))]
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos", target_os = "watchos"))]
 pub fn current_exe() -> io::Result<PathBuf> {
     unsafe {
         let mut sz: u32 = 0;
@@ -607,6 +613,7 @@ pub fn home_dir() -> Option<PathBuf> {
     #[cfg(any(
         target_os = "android",
         target_os = "ios",
+        target_os = "tvos",
         target_os = "watchos",
         target_os = "emscripten",
         target_os = "redox",
@@ -620,6 +627,7 @@ pub fn home_dir() -> Option<PathBuf> {
     #[cfg(not(any(
         target_os = "android",
         target_os = "ios",
+        target_os = "tvos",
         target_os = "watchos",
         target_os = "emscripten",
         target_os = "redox",
