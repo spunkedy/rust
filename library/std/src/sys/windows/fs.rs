@@ -507,22 +507,25 @@ impl File {
                 c::IO_REPARSE_TAG_SYMLINK => {
                     let info: *const c::SYMBOLIC_LINK_REPARSE_BUFFER =
                         ptr::addr_of!((*buf).rest).cast();
-                    assert!(info.is_aligned());
                     (
                         ptr::addr_of!((*info).PathBuffer).cast::<u16>(),
-                        (*info).SubstituteNameOffset / 2,
-                        (*info).SubstituteNameLength / 2,
-                        (*info).Flags & c::SYMLINK_FLAG_RELATIVE != 0,
+                        // Defensively read these unaligned to avoid cases like
+                        // https://github.com/rust-lang/rust/issues/104530
+                        ptr::addr_of!((*info).SubstituteNameOffset).read_unaligned() / 2,
+                        ptr::addr_of!((*info).SubstituteNameLength).read_unaligned() / 2,
+                        ptr::addr_of!((*info).Flags).read_unaligned() & c::SYMLINK_FLAG_RELATIVE
+                            != 0,
                     )
                 }
                 c::IO_REPARSE_TAG_MOUNT_POINT => {
                     let info: *const c::MOUNT_POINT_REPARSE_BUFFER =
                         ptr::addr_of!((*buf).rest).cast();
-                    assert!(info.is_aligned());
                     (
                         ptr::addr_of!((*info).PathBuffer).cast::<u16>(),
-                        (*info).SubstituteNameOffset / 2,
-                        (*info).SubstituteNameLength / 2,
+                        // Defensively read these unaligned to avoid cases like
+                        // https://github.com/rust-lang/rust/issues/104530
+                        ptr::addr_of!((*info).SubstituteNameOffset).read_unaligned() / 2,
+                        ptr::addr_of!((*info).SubstituteNameLength).read_unaligned() / 2,
                         false,
                     )
                 }
